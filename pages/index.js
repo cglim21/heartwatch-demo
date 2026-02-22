@@ -17,6 +17,15 @@ export default function Home() {
   const [chatInput, setChatInput] = useState('');
   const [isChatLoading, setIsChatLoading] = useState(false);
   
+  // ML Prediction States
+  const [mlRisks, setMlRisks] = useState({
+    min30: 12.5,
+    hour1: 18.2,
+    hour10: 25.4,
+    hour24: 31.0,
+    day7: 45.8
+  });
+
   // Track continuous ECG array specifically
   const [ecgStream, setEcgStream] = useState([]);
 
@@ -86,6 +95,15 @@ export default function Home() {
            if (nextEcg.length > 150) return nextEcg.slice(-150);
            return nextEcg;
         });
+        
+        // Simulate incoming ML Predictions slightly based on HR
+        setMlRisks(prev => ({
+           min30: Math.max(0, Math.min(100, prev.min30 + (Math.random() * 4 - 2) + (newPoint.heartRate > 100 ? 5 : 0))),
+           hour1: Math.max(0, Math.min(100, prev.hour1 + (Math.random() * 3 - 1.5))),
+           hour10: Math.max(0, Math.min(100, prev.hour10 + (Math.random() * 2 - 1))),
+           hour24: Math.max(0, Math.min(100, prev.hour24 + (Math.random() * 1.5 - 0.75))),
+           day7: Math.max(0, Math.min(100, prev.day7 + (Math.random() * 1 - 0.5)))
+        }));
 
         updateStats(newPoint);
       })
@@ -303,6 +321,48 @@ export default function Home() {
                     </AreaChart>
                   </ResponsiveContainer>
               </div>
+          </div>
+      </div>
+      
+      {/* 🚀 Phase 5: Predictive ML Risk Gauges */}
+      <div className="mt-6 bg-white rounded-2xl p-6 shadow-sm border border-slate-100">
+          <div className="mb-6 pb-4 border-b border-slate-100 flex items-center justify-between">
+              <div>
+                  <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+                      <svg className="w-5 h-5 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                      AI 부정맥 예측 (Arrhythmia Risk Forecast)
+                  </h3>
+                  <p className="text-sm text-slate-500">실시간 생체 데이터를 기반으로 다가올 위험도를 5가지 시간대별로 예측합니다.</p>
+              </div>
+              <span className="bg-indigo-50 text-indigo-700 font-semibold px-3 py-1 rounded-full text-xs">ML Engine Active</span>
+          </div>
+
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+              {[
+                  { label: "30분 뒤", value: mlRisks.min30 },
+                  { label: "1시간 뒤", value: mlRisks.hour1 },
+                  { label: "10시간 뒤", value: mlRisks.hour10 },
+                  { label: "24시간 뒤", value: mlRisks.hour24 },
+                  { label: "1주일 뒤", value: mlRisks.day7 }
+              ].map((risk, idx) => {
+                  const isHighRisk = risk.value > 50;
+                  const isMediumRisk = risk.value > 25 && risk.value <= 50;
+                  const colorClass = isHighRisk ? 'text-rose-500' : isMediumRisk ? 'text-amber-500' : 'text-emerald-500';
+                  const bgClass = isHighRisk ? 'bg-rose-500' : isMediumRisk ? 'bg-amber-500' : 'bg-emerald-500';
+
+                  return (
+                      <div key={idx} className="bg-slate-50 p-4 rounded-xl border border-slate-100 flex flex-col items-center text-center">
+                          <span className="text-sm font-medium text-slate-500 mb-2">{risk.label}</span>
+                          <div className={`text-2xl font-bold ${colorClass} mb-2`}>
+                              {risk.value.toFixed(1)}%
+                          </div>
+                          {/* Progress Bar */}
+                          <div className="w-full bg-slate-200 rounded-full h-1.5 overflow-hidden">
+                              <div className={`h-1.5 rounded-full ${bgClass} transition-all duration-500`} style={{ width: `${Math.min(100, risk.value)}%` }}></div>
+                          </div>
+                      </div>
+                  )
+              })}
           </div>
       </div>
 
