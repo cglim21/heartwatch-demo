@@ -1,7 +1,8 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from 'recharts';
 import { Heart, Activity, AlertTriangle, Battery, User } from 'lucide-react';
 import Head from 'next/head';
+import { supabase } from '../utils/supabaseClient';
 
 export default function Home() {
   const [data, setData] = useState([]);
@@ -9,61 +10,97 @@ export default function Home() {
   const [currentSpO2, setCurrentSpO2] = useState(0);
   const [status, setStatus] = useState('normal');
   const [isMoving, setIsMoving] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isConnected, setIsConnected] = useState(false);
+  
+  // Chatbot State
+  const [messages, setMessages] = useState([{role: 'assistant', text: '안녕하세요! HeartWatch AI 어시스턴트입니다. 지금 심박수나 전체적인 건강 상태에 대해 궁금한 점이 있으신가요?'}]);
+  const [chatInput, setChatInput] = useState('');
+  const [isChatLoading, setIsChatLoading] = useState(false);
   
   // Track continuous ECG array specifically
   const [ecgStream, setEcgStream] = useState([]);
 
-  // Fetch initial batch
   useEffect(() => {
-    fetch('/api/stream')
-      .then(res => res.json())
-      .then(initialData => {
-        setData(initialData);
-        // Expand ECG points for the 60 second window
-        const expandedEcg = initialData.flatMap(d => 
-            d.ecgWaveform.map((val, idx) => ({ time: d.id * 10 + idx, ecg: val }))
+    // 1. Fetch initial historical data (last 60 records)
+    const fetchInitialData = async () => {
+      const { data: history, error } = await supabase
+        .from('vital_signals')
+        .select('*')
+        .order('id', { ascending: false })
+        .limit(60);
+
+      if (history && history.length > 0) {
+        // Supabase returns newest first, so we reverse it for the chart (oldest to newest left to right)
+        const sortedHistory = history.reverse();
+        
+        // Transform Supabase data format to match our chart model
+        const chartData = sortedHistory.map(row => ({
+           id: row.id,
+           timestamp: row.recorded_at,
+           heartRate: row.heart_rate,
+           spO2: row.spo2,
+           isMoving: row.is_moving,
+           status: row.status,
+           ecgWaveform: row.ecg_waveform || []
+        }));
+
+        setData(chartData);
+        updateStats(chartData[chartData.length - 1]);
+
+        // Expand ECG
+        const expandedEcg = chartData.flatMap(d => 
+           (d.ecgWaveform || []).map((val, idx) => ({ time: parseInt(d.id) * 10 + idx, ecg: val }))
         );
-        // Keep last 150 points for faster UI
         setEcgStream(expandedEcg.slice(-150));
-        updateStats(initialData[initialData.length - 1]);
-        setIsLoading(false);
-      });
-  }, []);
+      }
+    };
 
-  // Poll for new data every second (simulating Websocket push)
-  useEffect(() => {
-    if (isLoading || data.length === 0) return;
+    fetchInitialData();
 
-    const intervalId = setInterval(() => {
-      const lastItem = data[data.length - 1];
-      
-      fetch(`/api/stream?cursor=${lastItem.timestamp}`)
-        .then(res => res.json())
-        .then(newData => {
-          if(newData.length > 0) {
-             const newPoint = newData[0];
-             
-             setData(prev => {
-                const nextData = [...prev, newPoint];
-                if (nextData.length > 60) nextData.shift(); // Keep last 60 seconds
-                return nextData;
-             });
+    // 2. Subscribe to Supabase Realtime inserts
+    const channel = supabase
+      .channel('public:vital_signals')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'vital_signals' }, payload => {
+        setIsConnected(true);
+        const newRow = payload.new;
+        
+        const newPoint = {
+           id: newRow.id,
+           timestamp: newRow.recorded_at,
+           heartRate: newRow.heart_rate,
+           spO2: newRow.spo2,
+           isMoving: newRow.is_moving,
+           status: newRow.status,
+           ecgWaveform: newRow.ecg_waveform || []
+        };
 
-             setEcgStream(prev => {
-                const newEcgPts = newPoint.ecgWaveform.map((val, idx) => ({ time: newPoint.id * 10 + idx, ecg: val }));
-                const nextEcg = [...prev, ...newEcgPts];
-                if (nextEcg.length > 150) return nextEcg.slice(-150);
-                return nextEcg;
-             });
-
-             updateStats(newPoint);
-          }
+        setData(prev => {
+          const nextData = [...prev, newPoint];
+          if (nextData.length > 60) nextData.shift(); // Keep last 60 seconds
+          return nextData;
         });
-    }, 1000);
 
-    return () => clearInterval(intervalId);
-  }, [isLoading, data]);
+        setEcgStream(prev => {
+           const newEcgPts = newPoint.ecgWaveform.map((val, idx) => ({ time: parseInt(newPoint.id) * 10 + idx, ecg: val }));
+           const nextEcg = [...prev, ...newEcgPts];
+           if (nextEcg.length > 150) return nextEcg.slice(-150);
+           return nextEcg;
+        });
+
+        updateStats(newPoint);
+      })
+      .subscribe((status) => {
+          if (status === 'SUBSCRIBED') {
+              setIsConnected(true);
+          } else {
+              setIsConnected(false);
+          }
+      });
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
 
   const updateStats = (latest) => {
     if (!latest) return;
@@ -71,13 +108,42 @@ export default function Home() {
     setCurrentSpO2(latest.spO2);
     setStatus(latest.status);
     setIsMoving(latest.isMoving);
-  };
+   };
 
+  const handleSendMessage = async (e) => {
+      e.preventDefault();
+      if (!chatInput.trim()) return;
+
+      const newUserMsg = { role: 'user', text: chatInput };
+      setMessages(prev => [...prev, newUserMsg]);
+      setChatInput('');
+      setIsChatLoading(true);
+
+      try {
+          const response = await fetch('/api/chat', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ 
+                  message: newUserMsg.text,
+                  hr: currentHR,
+                  spo2: currentSpO2
+              })
+          });
+          const data = await response.json();
+          
+          setMessages(prev => [...prev, { role: 'assistant', text: data.reply }]);
+      } catch (error) {
+          console.error("Chat API Error:", error);
+          setMessages(prev => [...prev, { role: 'assistant', text: "네트워크 오류가 발생했습니다. 잠시 후 다시 시도해 주세요." }]);
+      } finally {
+          setIsChatLoading(false);
+      }
+  };
 
   return (
     <div className="min-h-screen bg-slate-50 p-4 md:p-8 font-sans">
       <Head>
-        <title>HeartWatch | Patient Dashboard</title>
+        <title>HeartWatch | Supabase Realtime</title>
       </Head>
 
       {/* Header */}
@@ -87,8 +153,8 @@ export default function Home() {
                 <Activity size={24} />
             </div>
             <div>
-                <h1 className="text-xl font-bold text-slate-800">HeartWatch Monitor</h1>
-                <p className="text-sm text-slate-500">Live from IoT Sensor Node (BLE)</p>
+                <h1 className="text-xl font-bold text-slate-800">HeartWatch Monitor (Supabase)</h1>
+                <p className="text-sm text-slate-500">Live PostgreSQL Database Streaming</p>
             </div>
         </div>
         <div className="flex items-center gap-4">
@@ -148,10 +214,10 @@ export default function Home() {
             </div>
             <div className="flex items-center gap-2 text-sm text-sky-700 bg-sky-50 px-3 py-2 rounded-lg mt-8">
                 <span className="relative flex h-3 w-3">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-3 w-3 bg-sky-500"></span>
+                  <span className={`absolute inline-flex h-full w-full rounded-full opacity-75 ${currentSpO2 < 95 ? 'bg-amber-400 animate-ping' : 'bg-sky-400'} `}></span>
+                  <span className={`relative inline-flex rounded-full h-3 w-3 ${currentSpO2 < 95 ? 'bg-amber-500' : 'bg-sky-500'}`}></span>
                 </span>
-                Normal Saturation
+                {currentSpO2 < 95 ? 'Low Saturation' : 'Normal Saturation'}
             </div>
         </div>
 
@@ -167,9 +233,9 @@ export default function Home() {
             <div>
                  <p className="text-slate-500 font-medium mb-2">Supabase Sync Status</p>
                  <div className="flex items-center justify-between text-sm px-4 py-3 bg-slate-50 rounded-xl border border-slate-100">
-                    <span className="text-slate-600">Realtime Stream</span>
-                    <span className="text-green-600 font-medium flex items-center gap-1">
-                        <Activity size={14} /> Connected
+                    <span className="text-slate-600">Postgres WebSockets</span>
+                    <span className={`font-medium flex items-center gap-1 ${isConnected ? 'text-emerald-600' : 'text-slate-400'}`}>
+                        <Activity size={14} /> {isConnected ? 'Connected' : 'Connecting...'}
                     </span>
                  </div>
             </div>
@@ -182,11 +248,8 @@ export default function Home() {
           <div className="bg-white rounded-2xl p-6 shadow-sm border border-slate-100">
               <div className="flex justify-between items-center mb-6">
                   <div>
-                      <h3 className="text-lg font-bold text-slate-800">ECG / EKG Waveform (Live)</h3>
-                      <p className="text-sm text-slate-500">Lead II Analog Front-End Signal</p>
-                  </div>
-                  <div className="text-xs font-mono bg-emerald-50 text-emerald-600 px-3 py-1 rounded-md border border-emerald-100">
-                      10 Hz Sampling
+                      <h3 className="text-lg font-bold text-slate-800">ECG / EKG Waveform (Live from DB)</h3>
+                      <p className="text-sm text-slate-500">Real-time inserts tracked via pg_changes</p>
                   </div>
               </div>
               <div className="h-64 w-full bg-[linear-gradient(to_right,#f0f0f0_1px,transparent_1px),linear-gradient(to_bottom,#f0f0f0_1px,transparent_1px)] bg-[size:10px_10px] rounded-lg overflow-hidden relative border border-slate-200">
@@ -200,7 +263,7 @@ export default function Home() {
                             stroke="#10b981" 
                             strokeWidth={2} 
                             dot={false} 
-                            isAnimationActive={false} // Crucial for realtime feel
+                            isAnimationActive={false} 
                         />
                     </LineChart>
                   </ResponsiveContainer>
@@ -211,7 +274,6 @@ export default function Home() {
           <div className="bg-white rounded-2xl p-6 shadow-sm border border-slate-100">
              <div className="mb-6">
                   <h3 className="text-lg font-bold text-slate-800">Heart Rate Trend (Last 60s)</h3>
-                  <p className="text-sm text-slate-500">Continuous BPM tracking via PPG sensor</p>
               </div>
               <div className="h-48 w-full">
                    <ResponsiveContainer width="100%" height="100%">
@@ -243,6 +305,60 @@ export default function Home() {
               </div>
           </div>
       </div>
+
+      {/* AI Assistant Chat Section */}
+      <div className="mt-6 bg-white rounded-2xl p-6 shadow-sm border border-slate-100 flex flex-col h-[400px]">
+          <div className="mb-4 pb-4 border-b border-slate-100 flex items-center justify-between">
+              <div>
+                  <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+                       ✨ HeartWatch AI 주치의
+                  </h3>
+                  <p className="text-sm text-slate-500">실시간 생체 데이터를 분석하여 답변합니다.</p>
+              </div>
+          </div>
+          
+          <div className="flex-1 overflow-y-auto space-y-4 mb-4 pr-2">
+              {messages.map((msg, idx) => (
+                  <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                      <div className={`max-w-[80%] rounded-2xl px-4 py-3 ${
+                          msg.role === 'user' 
+                          ? 'bg-slate-800 text-white rounded-br-none' 
+                          : 'bg-indigo-50 text-indigo-900 border border-indigo-100 rounded-bl-none'
+                      }`}>
+                          <p className="text-sm leading-relaxed whitespace-pre-wrap">{msg.text}</p>
+                      </div>
+                  </div>
+              ))}
+              {isChatLoading && (
+                  <div className="flex justify-start">
+                      <div className="bg-slate-100 text-slate-500 rounded-2xl rounded-bl-none px-4 py-3 flex items-center gap-2">
+                          <div className="w-2 h-2 rounded-full bg-slate-400 animate-bounce"></div>
+                          <div className="w-2 h-2 rounded-full bg-slate-400 animate-bounce" style={{ animationDelay: '0.2s' }}></div>
+                          <div className="w-2 h-2 rounded-full bg-slate-400 animate-bounce" style={{ animationDelay: '0.4s' }}></div>
+                      </div>
+                  </div>
+              )}
+          </div>
+
+          <form onSubmit={handleSendMessage} className="flex gap-2 relative">
+              <input
+                  type="text"
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  placeholder="현재 심박수 상태에 대해 질문해보세요..."
+                  className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all"
+                  disabled={isChatLoading}
+              />
+              <button 
+                  type="submit" 
+                  disabled={isChatLoading || !chatInput.trim()}
+                  className="bg-slate-800 text-white px-6 py-3 rounded-xl font-medium text-sm hover:bg-slate-700 disabled:opacity-50 transition-colors"
+              >
+                  질문하기
+              </button>
+          </form>
+      </div>
+
     </div>
   );
 }
