@@ -165,16 +165,30 @@ export default function Home() {
       </Head>
 
       {/* Header */}
-      <header className="flex justify-between items-center mb-8 bg-white p-4 rounded-xl shadow-sm border border-slate-100">
+      <header className="flex justify-between items-center mb-8 bg-white p-4 rounded-xl shadow-sm border border-slate-100 relative">
         <div className="flex items-center gap-3">
             <div className={`p-2 rounded-full ${status === 'warning' ? 'bg-red-100 text-red-600 animate-pulse' : 'bg-rose-100 text-rose-500'}`}>
                 <Activity size={24} />
             </div>
             <div>
-                <h1 className="text-xl font-bold text-slate-800">HeartWatch Monitor (Supabase)</h1>
-                <p className="text-sm text-slate-500">Live PostgreSQL Database Streaming</p>
+                <h1 className="text-xl font-bold text-slate-800">HeartWatch</h1>
+                <p className="text-sm text-slate-500">AI Monitoring</p>
             </div>
         </div>
+
+        {/* Company Logo - Center positioned */}
+        <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center gap-3">
+            <img 
+                src="/logo.png" 
+                alt="AID Logo" 
+                className="h-9 object-contain drop-shadow-sm" 
+                onError={(e) => { e.target.style.display = 'none'; }} 
+            />
+            <span className="text-2xl font-black bg-gradient-to-r from-purple-800 to-indigo-900 bg-clip-text text-transparent tracking-tight">
+                (주) 에이드
+            </span>
+        </div>
+
         <div className="flex items-center gap-4">
             <div className="flex items-center gap-2 bg-slate-100 px-3 py-1.5 rounded-full text-sm font-medium text-slate-600">
                 <Battery size={16} className="text-green-500" /> 84%
